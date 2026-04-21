@@ -12,8 +12,9 @@ The repo has two main jobs:
 - [main.py](E:/pybreaker/main.py) generates a clean transaction dataset and a broken copy.
 - [generators/transaction_generator.py](E:/pybreaker/generators/transaction_generator.py) creates synthetic line-level retail transactions.
 - [domain/transactions.py](E:/pybreaker/domain/transactions.py) defines the Pydantic and dataclass models used by the generator.
-- [breakers/breaker.py](E:/pybreaker/breakers/breaker.py) provides a general mutation engine organized around `verb + data_type`.
+- [breakers/breaker.py](E:/pybreaker/breakers/breaker.py) acts as a factory/dispatcher that selects mutation verbs by name.
 - [breakers/detection.py](E:/pybreaker/breakers/detection.py) contains reusable column type-detection and validation logic.
+- [breakers/verbs.py](E:/pybreaker/breakers/verbs.py) contains the concrete verb implementations.
 
 ## How generation works
 
@@ -55,6 +56,10 @@ If `columns` is provided, the breaker validates that:
 - each named column matches the requested `data_type`
 
 The column detection and validation rules live in a separate detection module so they can be reused independently of the mutation verbs.
+
+The mutation implementations themselves now live in `breakers/verbs.py`, while
+`Breaker` follows a factory-style design that creates/selects the requested verb
+object by name.
 
 ### Supported verbs
 
