@@ -1,12 +1,20 @@
 import random
 import numpy as np
-from typing import Iterable, List, Dict
+from typing import List
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 
 from domain.transactions import RawRetailLine, Item
 
 class TransactionGenerator:
+    """Generate seeded synthetic retail transaction line items.
+
+    The generator creates stores, registers, and a weighted item catalog, then
+    samples line-level transactions with quantity, pricing, discount, and tax
+    calculations. Output rows are validated by the `RawRetailLine` Pydantic
+    model.
+    """
+
     def __init__(self, seed: int | None = None, store_number: int = 2, registers_per_store: int = 4, transactions_per_register: int = 100, items_total: int = 25):
         self.seed = seed
         self.rng = random.Random(seed)
@@ -23,6 +31,7 @@ class TransactionGenerator:
         self.item_by_id = {it.item_id: it for it in self.global_item_list}
 
     def _generate_store_dict(self) -> dict[UUID, list[UUID]]:
+        """Create store IDs and the register IDs that belong to each store."""
         store_dict: dict[UUID, list[UUID]] = {}
         for _ in range(self.number_of_stores):
             store_id = uuid4()
@@ -31,15 +40,18 @@ class TransactionGenerator:
         return store_dict
     
     def _draw_price_cents(self, mu=1050, sigma=350, min_price=50):
+        """Sample an item price in cents from a truncated normal-like distribution."""
         while True:
             x = self.rng.normalvariate(mu, sigma)
             if x >= min_price:
                 return int(round(x))
             
     def _draw_weight(self):
+        """Sample an item popularity weight for weighted item selection."""
         return self.rng.paretovariate(1.5)
     
     def _generate_item_list(self):
+        """Build the global item catalog used across all generated transactions."""
         item_list: List[Item] = []
         for _ in range(self.number_of_items):
             item = Item(
@@ -52,10 +64,12 @@ class TransactionGenerator:
         return item_list
     
     def _sample_item(self) -> Item:
+        """Choose an item using the configured item weights."""
         item_id = self.rng.choices(self.item_ids, weights=self.item_weights, k=1)[0]
         return self.item_by_id[item_id]
     
     def _sample_quantity(self) -> int:
+        """Sample a line quantity from a simple mixture of count distributions."""
         r = self.rng.random()
         if r < 0.7:
             return int(self.np_rng.poisson(1.5) + 1)
@@ -63,14 +77,48 @@ class TransactionGenerator:
             return int(self.np_rng.poisson(4) + 1)
         else:
             return int(self.np_rng.negative_binomial(5, 0.3) + 5)
+
+    def _sample_discount_cents(self, extended_cents: int) -> int:
+        """Apply no discount most of the time and otherwise sample a markdown."""
+        if extended_cents <= 0:
+            return 0
+
+        # Most lines have no discount; discounted lines skew toward smaller markdowns.
+        if self.rng.random() < 0.8:
+            return 0
+
+        discount_rate_bps = self.rng.randint(250, 3000)
+        discount_cents = round(extended_cents * discount_rate_bps / 10_000)
+        return min(discount_cents, extended_cents)
+
+    def _sample_tax_rate_bps(self, taxable: bool) -> int:
+        """Return a sampled tax rate in basis points for taxable items only."""
+        if not taxable:
+            return 0
+
+        # Roughly 5% to 10% for taxable items, represented in basis points.
+        return self.rng.randint(500, 1000)
+
+    def _calculate_tax_cents(self, net_cents: int, tax_rate_bps: int) -> int:
+        """Convert a net amount and tax rate into integer tax cents."""
+        return round(net_cents * tax_rate_bps / 10_000)
+
+    def _sample_payment_type(self) -> str:
+        """Sample a payment type with a simple retail-style distribution."""
+        payment_types = ["credit", "debit", "cash", "mobile_wallet", "gift_card"]
+        weights = [0.4, 0.28, 0.15, 0.12, 0.05]
+        return self.rng.choices(payment_types, weights=weights, k=1)[0]
         
     def get_store_dict(self):
+        """Expose the generated store/register structure."""
         return self.store_structure
     
     def get_item_list(self):
+        """Expose the generated global item catalog."""
         return self.global_item_list
     
     def generate_transactions(self, min_lines: int = 1, max_lines: int = 12) -> List[RawRetailLine]:
+        """Generate synthetic retail line items and return them as validated models."""
         lines: List[RawRetailLine] = []
         total_transactions = self.number_of_stores * self.registers_per_store * self.number_of_transactions
         start_ts = datetime.now()
@@ -83,8 +131,7 @@ class TransactionGenerator:
             transaction_id = uuid4()
             store_id = self.rng.choice(self.store_ids)
             register_id = self.rng.choice(self.store_structure[store_id])
-
-
+            payment_type = self._sample_payment_type()
 
             k = self.rng.randint(min_lines, max_lines)
 
@@ -98,12 +145,11 @@ class TransactionGenerator:
                 unit_price_cents = int(item.price_cents)
                 extended_cents = qty * unit_price_cents
 
-                # need to be added later as well as sampling logic for discounts (net), tax and then totals
-                discount_cents = 0
-                tax_rate_bps = 0
-                net_cents = extended_cents
-                tax_cents = 0
-                line_total_cents = net_cents
+                discount_cents = self._sample_discount_cents(extended_cents)
+                net_cents = extended_cents - discount_cents
+                tax_rate_bps = self._sample_tax_rate_bps(item.taxable)
+                tax_cents = self._calculate_tax_cents(net_cents, tax_rate_bps)
+                line_total_cents = net_cents + tax_cents
                 
                 lines.append(
                     RawRetailLine(
@@ -112,6 +158,7 @@ class TransactionGenerator:
                         store_id=store_id,
                         register_id=register_id,
                         item_id=item.item_id,
+                        payment_type=payment_type,
                         transaction_ts=ts,
                         business_date=ts.date(),
                         quantity=qty,
